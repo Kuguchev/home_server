@@ -1,0 +1,144 @@
+version: '3'
+
+services:
+## NextCloud configuration ##
+  nextcloud_database:
+    image: postgres:alpine
+    restart: always
+    volumes:
+      - nextcloud_database:/var/lib/postgresql/data
+    env_file:
+      - ./nextcloud/nextcloud_db.env
+    networks:
+      - nextcloud_net
+
+  nextcloud_redis:
+    image: redis:alpine
+    restart: always
+    networks:
+      - nextcloud_net
+
+  nextcloud_php_fpm:
+    build: ./nextcloud/php-fpm-alpine
+    restart: always
+    volumes:
+      - nextcloud:/var/www/html
+    environment:
+      - POSTGRES_HOST=nextcloud_database
+      - REDIS_HOST=nextcloud_redis
+    env_file:
+      - ./nextcloud/nextcloud_db.env
+    depends_on:
+      - nextcloud_database
+      - nextcloud_redis
+    networks:
+      - nextcloud_net
+
+  nextcloud_cron:
+    image: nextcloud:fpm-alpine
+    restart: always
+    volumes:
+      - nextcloud:/var/www/html
+    entrypoint: /cron.sh
+    depends_on:
+      - nextcloud_database
+      - nextcloud_redis
+    networks:
+      - nextcloud_net
+
+  nextcloud_nginx:
+    build: ./nextcloud/nginx
+    restart: always
+    ports:
+      - "8080:80"
+    volumes:
+      - nextcloud:/var/www/html:ro
+    environment:
+      - VIRTUAL_HOST=nextcloud.dmitry-kuguchev.ru
+      - LETSENCRYPT_HOST=nextcloud.dmitry-kuguchev.ru
+      - LETSENCRYPT_EMAIL=kuguchev.dm@gmail.com
+    depends_on:
+      - nextcloud_php_fpm
+    networks:
+      - nextcloud_net
+      - proxy-tier
+
+## GitLab configuration ##
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    hostname: "localhost"
+    restart: always
+    environment:
+      VIRTUAL_HOST: gitlab.dmitry-kuguchev.ru
+      LETSENCRYPT_HOST: gitlab.dmitry-kuguchev.ru
+      LETSENCRYPT_EMAIL: kuguchev.dm@gmail.com
+      GITLAB_OMNIBUS_CONFIG: |
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        external_url 'http://localhost:8081'
+    ports:
+      - "8081:80"
+      - "2222:22"
+    volumes:
+      - /data/docker/gitlab/etc/gitlab:/etc/gitlab
+      - /data/docker/gitlab/var/opt/gitlab:/var/opt/gitlab
+      - /data/docker/gitlab/var/log/gitlab:/var/log/gitlab
+    networks:
+      - gitlab_net
+      - proxy-tier
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:alpine
+    restart: always
+    depends_on:
+      - gitlab
+    volumes:
+      - /data/docker/gitlab/etc/gitlab-runner:/etc/gitlab-runner
+      - /data/docker/gitlab/var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - gitlab_net
+
+## Proxy configuration ##
+  proxy_server:
+    build: ./proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    labels:
+      com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy: "true"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    networks:
+      - proxy-tier
+
+  letsencrypt-companion:
+    image: nginxproxy/acme-companion
+    restart: always
+    volumes:
+      - certs:/etc/nginx/certs
+      - acme:/etc/acme.sh
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy-tier
+    depends_on:
+      - proxy_server
+
+### Named volumes ###
+volumes:
+  nextcloud_database:
+  nextcloud:
+  certs:
+  acme:
+  vhost.d:
+  html:
+
+### Networks ###
+networks:
+  proxy-tier:
+  gitlab_net:
+  nextcloud_net:
